@@ -39,14 +39,6 @@ int nova_alloc_block_free_lists(struct super_block *sb)
 	if (!sbi->free_lists)
 		return -ENOMEM;
 
-//	sbi->node1_free_lists = kzalloc(sbi->cpus * sizeof(struct free_list),
-//							GFP_KERNEL);
-//	sbi->node2_free_lists = kzalloc(sbi->cpus * sizeof(struct free_list),
-//							GFP_KERNEL);
-//
-//	if (!sbi->node1_free_lists || !sbi->node2_free_lists)
-//		return -ENOMEM;
-
 	for (i = 0; i < sbi->cpus; i++) {
 		free_list = nova_get_free_list(sb, i);
 		free_list->block_free_tree = RB_ROOT;
@@ -61,10 +53,6 @@ void nova_delete_free_lists(struct super_block *sb)
 	struct nova_sb_info *sbi = NOVA_SB(sb);
 
 	/* Each tree is freed in save_blocknode_mappings */
-//	kfree(sbi->node1_free_lists);
-//	kfree(sbi->node2_free_lists);
-//	sbi->node1_free_lists = NULL;
-//	sbi->node2_free_lists = NULL;
 	kfree(sbi->free_lists);
 	sbi->free_lists = NULL;
 }
@@ -519,83 +507,6 @@ static int nova_get_candidate_free_list(struct super_block *sb)
 	return cpuid;
 }
 
-//hustard
-static int nova_new_node_blocks(struct super_block *sb, unsigned long *blocknr,
-	unsigned int num, unsigned short btype, int zero,
-	enum alloc_type atype, int node)
-{
-	struct free_list *free_list;
-	void *bp;
-	unsigned long num_blocks = 0;
-	unsigned long ret_blocks = 0;
-	unsigned long new_blocknr = 0;
-	struct rb_node *temp;
-	struct nova_range_node *first;
-	int cpuid;
-	int retried = 0;
-
-	num_blocks = num * nova_get_numblocks(btype);
-	if (num_blocks == 0)
-		return -EINVAL;
-
-	cpuid = smp_processor_id();
-	if(node == 1)
-		cpuid = get_node1_cpuid();
-	else if(node == 0)
-		cpuid = get_node0_cpuid();
-			
-retry:
-	free_list = nova_get_free_list(sb, cpuid);
-	spin_lock(&free_list->s_lock);
-
-	if (free_list->num_free_blocks < num_blocks || !free_list->first_node) {
-		nova_dbgv("%s: cpu %d, free_blocks %lu, required %lu, "
-			"blocknode %lu\n", __func__, cpuid,
-			free_list->num_free_blocks, num_blocks,
-			free_list->num_blocknode);
-		if (free_list->num_free_blocks >= num_blocks) {
-			nova_dbg("first node is NULL "
-				"but still has free blocks\n");
-			temp = rb_first(&free_list->block_free_tree);
-			first = container_of(temp, struct nova_range_node, node);
-			free_list->first_node = first;
-		} else {
-			spin_unlock(&free_list->s_lock);
-			if (retried >= 3)
-				return -ENOMEM;
-			cpuid = nova_get_candidate_free_list(sb);
-			retried++;
-			goto retry;
-		}
-	}
-
-	ret_blocks = nova_alloc_blocks_in_free_list(sb, free_list, btype,
-						num_blocks, &new_blocknr);
-
-	if (atype == LOG) {
-		free_list->alloc_log_count++;
-		free_list->alloc_log_pages += ret_blocks;
-	} else if (atype == DATA) {
-		free_list->alloc_data_count++;
-		free_list->alloc_data_pages += ret_blocks;
-	}
-
-	spin_unlock(&free_list->s_lock);
-
-	if (ret_blocks <= 0 || new_blocknr == 0)
-		return -ENOSPC;
-
-	if (zero) {
-		bp = nova_get_block(sb, nova_get_block_off(sb,
-						new_blocknr, btype));
-		memset_nt(bp, 0, PAGE_SIZE * ret_blocks);
-	}
-	*blocknr = new_blocknr;
-
-	nova_dbg_verbose("Alloc %lu NVMM blocks 0x%lx\n", ret_blocks, *blocknr);
-	return ret_blocks / nova_get_numblocks(btype);
-}
-
 /* Return how many blocks allocated */
 static int nova_new_blocks(struct super_block *sb, unsigned long *blocknr,
 	unsigned int num, unsigned short btype, int zero,
@@ -686,27 +597,6 @@ inline int nova_new_data_blocks(struct super_block *sb, struct nova_inode *pi,
 	return allocated;
 }
 
-inline int nova_new_data_node_blocks(struct super_block *sb, struct nova_inode *pi,
-	unsigned long *blocknr,	unsigned int num, unsigned long start_blk,
-	int zero, int cow, int node)
-{
-	int allocated;
-	timing_t alloc_time;
-	NOVA_START_TIMING(new_data_blocks_t, alloc_time);
-	allocated = nova_new_node_blocks(sb, blocknr, num,
-					pi->i_blk_type, zero, DATA, node);
-	NOVA_END_TIMING(new_data_blocks_t, alloc_time);
-//	printk("Inode %llu, start blk %lu, cow %d, "
-//			"alloc %d data blocks from %lu to %lu\n",
-//			pi->nova_ino, start_blk, cow, allocated, *blocknr,
-//			*blocknr + allocated - 1);
-	nova_dbgv("Inode %llu, start blk %lu, cow %d, "
-			"alloc %d data blocks from %lu to %lu\n",
-			pi->nova_ino, start_blk, cow, allocated, *blocknr,
-			*blocknr + allocated - 1);
-	return allocated;
-}
-
 inline int nova_new_log_blocks(struct super_block *sb, struct nova_inode *pi,
 	unsigned long *blocknr, unsigned int num, int zero)
 {
@@ -738,5 +628,3 @@ unsigned long nova_count_free_blocks(struct super_block *sb)
 	num_free_blocks += free_list->num_free_blocks;
 	return num_free_blocks;
 }
-
-

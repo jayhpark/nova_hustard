@@ -190,7 +190,6 @@ struct pio_arg {
 
 struct pio_work_cont {
 	struct work_struct real_work;
-	//struct delayed_work real_work;
 	struct pio_arg arg;
 };
 

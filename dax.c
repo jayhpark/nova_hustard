@@ -22,14 +22,12 @@
 #include <asm/topology.h>
 #include "nova.h"
 
-cpumask_var_t affinity_mask[2];
-int node_cpu_number = 0;
 struct workqueue_struct *node0_queue;
 struct workqueue_struct *node1_queue;
 static int node0_cpuid = 0;
 static int node1_cpuid = 6;
 
-int get_node0_cpuid(void) {
+int get_node0_cpuid_rr(void) {
 	node0_cpuid++;
 	if(node0_cpuid == 6)
 		node0_cpuid = 12;
@@ -39,7 +37,7 @@ int get_node0_cpuid(void) {
 	return node0_cpuid;
 }
 
-int get_node1_cpuid(void) {
+int get_node1_cpuid_rr(void) {
 	node1_cpuid++;
 	if(node1_cpuid == 12)
 		node1_cpuid = 18;
@@ -308,422 +306,7 @@ int nova_reassign_file_tree(struct super_block *sb,
 	return 0;
 }
 
-//ssize_t nova_cow_file_write(struct file *filp,
-//	const char __user *buf,	size_t len, loff_t *ppos, bool need_mutex)
-//{
-//	struct address_space *mapping = filp->f_mapping;
-//	struct inode    *inode = mapping->host;
-//	struct nova_inode_info *si = NOVA_I(inode);
-//	struct nova_inode_info_header *sih = &si->header;
-//	struct super_block *sb = inode->i_sb;
-//	struct nova_inode *pi;
-//	struct nova_file_write_entry entry_data;
-//	struct nova_file_write_entry entry_data2;
-//	ssize_t     written = 0;
-//	loff_t pos;
-//	size_t count, offset, copied, ret;
-//	unsigned long start_blk, num_blocks;
-//	unsigned long total_blocks;
-//	unsigned long blocknr = 0, blocknr2 = 0;
-//	unsigned int data_bits;
-//	int allocated, allocated2;
-//	void* kmem;
-//	void* kmem2;
-//	u64 curr_entry;
-//	size_t bytes;
-//	size_t bytes2;
-//	long status = 0;
-//	timing_t cow_write_time, memcpy_time;
-//	unsigned long step = 0;
-//	u64 temp_tail, begin_tail = 0;
-//	u32 time;
-//
-//	struct pio_work_cont *pio_worker_thread;
-//	struct pio_work_cont *pio_worker_thread2;
-//	
-//	if (len == 0)
-//		return 0;
-//
-//	/*
-//	 * We disallow writing to a mmaped file,
-//	 * since write is copy-on-write while mmap is DAX (in-place).
-//	 */
-//	if (mapping_mapped(mapping))
-//		return -EACCES;
-//
-//	NOVA_START_TIMING(cow_write_t, cow_write_time);
-//
-//	sb_start_write(inode->i_sb);
-//	if (need_mutex)
-//		mutex_lock(&inode->i_mutex);
-//
-//	if (!access_ok(VERIFY_READ, buf, len)) {
-//		ret = -EFAULT;
-//		goto out;
-//	}
-//	pos = *ppos;
-//
-//	if (filp->f_flags & O_APPEND)
-//		pos = i_size_read(inode);
-//
-//	count = len;
-//
-//	pi = nova_get_inode(sb, inode);
-//
-//	offset = pos & (sb->s_blocksize - 1);
-//	num_blocks = ((count + offset - 1) >> sb->s_blocksize_bits) + 1;
-//	total_blocks = num_blocks;
-//	/* offset in the actual block size block */
-//
-//	ret = file_remove_privs(filp);
-//	if (ret) {
-//		goto out;
-//	}
-//	inode->i_ctime = inode->i_mtime = CURRENT_TIME_SEC;
-//	time = CURRENT_TIME_SEC.tv_sec;
-//
-//	nova_dbgv("%s: inode %lu, offset %lld, count %lu\n",
-//			__func__, inode->i_ino,	pos, count);
-//
-////	printk("\n%s: inode %lu, offset %lld, count %lu\n",
-////			__func__, inode->i_ino,	pos, count);
-//
-//	temp_tail = pi->log_tail;
-//	while (num_blocks > 0) {
-//		if(num_blocks == 1) {
-//			offset = pos & (nova_inode_blk_size(pi) - 1);
-//			start_blk = pos >> sb->s_blocksize_bits;
-//
-//			/* don't zero-out the allocated blocks */
-//			allocated = nova_new_data_node_blocks(sb, pi, &blocknr, num_blocks,
-//							start_blk, 0, 1, 1);
-//			nova_dbg_verbose("%s: alloc %d blocks @ %lu\n", __func__,
-//							allocated, blocknr);
-//
-//			if (allocated <= 0) {
-//				nova_err(sb, "%s alloc blocks failed!, %d\n", __func__,
-//									allocated);
-//				ret = allocated;
-//				goto out;
-//			}
-//
-//			step++;
-//			bytes = sb->s_blocksize * allocated - offset;
-//			if (bytes > count)
-//				bytes = count;
-//
-//			kmem = nova_get_block(inode->i_sb,
-//				nova_get_block_off(sb, blocknr,	pi->i_blk_type));
-//
-//			if (offset || ((offset + bytes) & (PAGE_SIZE - 1)) != 0)
-//				nova_handle_head_tail_blocks(sb, pi, inode, pos, bytes,
-//									kmem);
-//
-//			/* Now copy from user buf */
-//			NOVA_START_TIMING(memcpy_w_nvmm_t, memcpy_time);
-//
-//			pio_worker_thread = kmalloc(sizeof(*pio_worker_thread), GFP_KERNEL);
-//			INIT_WORK(&(pio_worker_thread->real_work), worker_memcpy_to_pmem_nocache);
-//		
-//			pio_worker_thread->arg.dst = kmem + offset;
-//			pio_worker_thread->arg.src = buf;
-//			pio_worker_thread->arg.size = bytes;
-//		
-//			pio_worker_thread->arg.inode = inode->i_ino;
-//			pio_worker_thread->arg.node = 1;
-//
-//			if(((NOVA_SB(sb)->phys_addr >> PAGE_SHIFT) + blocknr) >= 0x2000000ULL)
-//				queue_work_on(get_node1_cpuid(), node0_queue, &(pio_worker_thread->real_work));
-//			else
-//				queue_work_on(get_node0_cpuid(), node0_queue, &(pio_worker_thread->real_work));
-//			
-//			flush_work(&(pio_worker_thread->real_work));
-//
-//			copied = bytes - 0;
-//
-//			NOVA_END_TIMING(memcpy_w_nvmm_t, memcpy_time);
-//
-//			entry_data.pgoff = cpu_to_le64(start_blk);
-//			entry_data.num_pages = cpu_to_le32(allocated);
-//			entry_data.invalid_pages = 0;
-//			entry_data.block = cpu_to_le64(nova_get_block_off(sb, blocknr,
-//								pi->i_blk_type));
-//			entry_data.mtime = cpu_to_le32(time);
-//			/* Set entry type after set block */
-//			nova_set_entry_type((void *)&entry_data, FILE_WRITE);
-//
-//			if (pos + copied > inode->i_size)
-//				entry_data.size = cpu_to_le64(pos + copied);
-//			else
-//				entry_data.size = cpu_to_le64(inode->i_size);
-//
-//			curr_entry = nova_append_file_write_entry(sb, pi, inode,
-//								&entry_data, temp_tail);
-//			if (curr_entry == 0) {
-//				nova_err(sb, "ERROR: append inode entry failed\n");
-//				ret = -EINVAL;
-//				goto out;
-//			}
-//
-//			nova_dbgv("Write: %p, %lu\n", kmem, copied);
-//			if (copied > 0) {
-//				status = copied;
-//				written += copied;
-//				pos += copied;
-//				buf += copied;
-//				count -= copied;
-//				num_blocks -= allocated;
-//			}
-//			if (unlikely(copied != bytes)) {
-//				nova_dbg("%s ERROR!: %p, bytes %lu, copied %lu\n",
-//					__func__, kmem, bytes, copied);
-//				if (status >= 0)
-//					status = -EFAULT;
-//			}
-//			if (status < 0)
-//				break;
-//
-//			if (begin_tail == 0)
-//				begin_tail = curr_entry;
-//			temp_tail = curr_entry + sizeof(struct nova_file_write_entry);
-//			
-//			kfree(pio_worker_thread);
-//		} else {
-//			offset = pos & (nova_inode_blk_size(pi) - 1);
-//			start_blk = pos >> sb->s_blocksize_bits;
-//
-//			/* don't zero-out the allocated blocks */
-//
-//			//allocated = nova_new_data_node_blocks(sb, pi, &blocknr, (num_blocks - 1) / 2 + 1,
-//			allocated = nova_new_data_node_blocks(sb, pi, &blocknr, (num_blocks - 1) / 2 + 1,
-//							start_blk, 0, 1, 0);
-//			nova_dbg_verbose("%s: alloc %d blocks @ %lu\n", __func__,
-//							allocated, blocknr);
-//
-//			if (allocated <= 0) {
-//				nova_err(sb, "%s alloc blocks failed1!, %d\n", __func__,
-//									allocated);
-//				ret = allocated;
-//				goto out;
-//			}
-//
-//			step++;
-//			bytes = sb->s_blocksize * allocated - offset;
-//			if (bytes > count)
-//				bytes = count;
-//
-//			kmem = nova_get_block(inode->i_sb,
-//				nova_get_block_off(sb, blocknr,	pi->i_blk_type));
-//
-//			if (offset || ((offset + bytes) & (PAGE_SIZE - 1)) != 0)
-//				nova_handle_head_tail_blocks(sb, pi, inode, pos, bytes,
-//									kmem);
-//
-//			/* Now copy from user buf */
-//
-//			pio_worker_thread = kmalloc(sizeof(*pio_worker_thread), GFP_KERNEL);
-//			INIT_WORK(&(pio_worker_thread->real_work), worker_memcpy_to_pmem_nocache);
-//		
-//			pio_worker_thread->arg.dst = kmem + offset;
-//			pio_worker_thread->arg.src = buf;
-//			pio_worker_thread->arg.size = bytes;
-//
-//			pio_worker_thread->arg.inode = inode->i_ino;
-//			pio_worker_thread->arg.node = 1;
-//
-//			copied = bytes - 0;
-//
-//			entry_data.pgoff = cpu_to_le64(start_blk);
-//			entry_data.num_pages = cpu_to_le32(allocated);
-//			entry_data.invalid_pages = 0;
-//			entry_data.block = cpu_to_le64(nova_get_block_off(sb, blocknr,
-//								pi->i_blk_type));
-//			entry_data.mtime = cpu_to_le32(time);
-//			/* Set entry type after set block */
-//			nova_set_entry_type((void *)&entry_data, FILE_WRITE);
-//
-//			if (pos + copied > inode->i_size)
-//				entry_data.size = cpu_to_le64(pos + copied);
-//			else
-//				entry_data.size = cpu_to_le64(inode->i_size);
-//
-//			curr_entry = nova_append_file_write_entry(sb, pi, inode,
-//								&entry_data, temp_tail);
-//			if (curr_entry == 0) {
-//				nova_err(sb, "ERROR: append inode entry failed\n");
-//				ret = -EINVAL;
-//				goto out;
-//			}
-//
-//			nova_dbgv("Write: %p, %lu\n", kmem, copied);
-//			if (copied > 0) {
-//				status = copied;
-//				written += copied;
-//				pos += copied;
-//				buf += copied;
-//				count -= copied;
-//				num_blocks -= allocated;
-//			}
-//			if (unlikely(copied != bytes)) {
-//				nova_dbg("%s ERROR!: %p, bytes %lu, copied %lu\n",
-//					__func__, kmem, bytes, copied);
-//				if (status >= 0)
-//					status = -EFAULT;
-//			}
-//			if (status < 0)
-//				break;
-//
-//			if (begin_tail == 0)
-//				begin_tail = curr_entry;
-//			temp_tail = curr_entry + sizeof(struct nova_file_write_entry);
-//			
-//
-//			///////
-//			
-//			offset = pos & (nova_inode_blk_size(pi) - 1);
-//			start_blk = pos >> sb->s_blocksize_bits;
-//
-//			/* don't zero-out the allocated blocks */
-//
-//			allocated = nova_new_data_node_blocks(sb, pi, &blocknr2, num_blocks,
-//							start_blk, 0, 1, 1);
-//			nova_dbg_verbose("%s: alloc %d blocks @ %lu\n", __func__,
-//							allocated, blocknr2);
-//
-//			if (allocated <= 0) {
-//				nova_err(sb, "%s alloc blocks failed2!, %d\n", __func__,
-//									allocated);
-//				ret = allocated;
-//				goto out;
-//			}
-//
-//			step++;
-//			bytes = sb->s_blocksize * allocated - offset;
-//			if (bytes > count)
-//				bytes = count;
-//
-//			kmem = nova_get_block(inode->i_sb,
-//				nova_get_block_off(sb, blocknr2,	pi->i_blk_type));
-//
-//			if (offset || ((offset + bytes) & (PAGE_SIZE - 1)) != 0)
-//				nova_handle_head_tail_blocks(sb, pi, inode, pos, bytes,
-//									kmem);
-//
-//			/* Now copy from user buf */
-//			NOVA_START_TIMING(memcpy_w_nvmm_t, memcpy_time);
-//
-//			pio_worker_thread2 = kmalloc(sizeof(*pio_worker_thread), GFP_KERNEL);
-//			INIT_WORK(&(pio_worker_thread2->real_work), worker_memcpy_to_pmem_nocache);
-//		
-//			pio_worker_thread2->arg.dst = kmem + offset;
-//			pio_worker_thread2->arg.src = buf;
-//			pio_worker_thread2->arg.size = bytes;
-//
-//			pio_worker_thread2->arg.inode = inode->i_ino;
-//			pio_worker_thread2->arg.node = 2;
-//			
-//			if(((NOVA_SB(sb)->phys_addr >> PAGE_SHIFT) + blocknr) >= 0x2000000ULL)
-//				queue_work_on(get_node1_cpuid(), node0_queue, &(pio_worker_thread->real_work));
-//			else
-//				queue_work_on(get_node0_cpuid(), node0_queue, &(pio_worker_thread->real_work));
-//
-//			if(((NOVA_SB(sb)->phys_addr >> PAGE_SHIFT) + blocknr2) >= 0x2000000ULL)
-//				queue_work_on(get_node1_cpuid(), node1_queue, &(pio_worker_thread2->real_work));
-//			else
-//				queue_work_on(get_node0_cpuid(), node1_queue, &(pio_worker_thread2->real_work));
-//
-//			flush_work(&(pio_worker_thread->real_work));
-//			flush_work(&(pio_worker_thread2->real_work));
-//
-//			copied = bytes - 0;
-//
-//			NOVA_END_TIMING(memcpy_w_nvmm_t, memcpy_time);
-//
-//			entry_data.pgoff = cpu_to_le64(start_blk);
-//			entry_data.num_pages = cpu_to_le32(allocated);
-//			entry_data.invalid_pages = 0;
-//			entry_data.block = cpu_to_le64(nova_get_block_off(sb, blocknr2,
-//								pi->i_blk_type));
-//			entry_data.mtime = cpu_to_le32(time);
-//			/* Set entry type after set block */
-//			nova_set_entry_type((void *)&entry_data, FILE_WRITE);
-//
-//			if (pos + copied > inode->i_size)
-//				entry_data.size = cpu_to_le64(pos + copied);
-//			else
-//				entry_data.size = cpu_to_le64(inode->i_size);
-//
-//			curr_entry = nova_append_file_write_entry(sb, pi, inode,
-//								&entry_data, temp_tail);
-//			if (curr_entry == 0) {
-//				nova_err(sb, "ERROR: append inode entry failed\n");
-//				ret = -EINVAL;
-//				goto out;
-//			}
-//
-//			nova_dbgv("Write: %p, %lu\n", kmem, copied);
-//			if (copied > 0) {
-//				status = copied;
-//				written += copied;
-//				pos += copied;
-//				buf += copied;
-//				count -= copied;
-//				num_blocks -= allocated;
-//			}
-//			if (unlikely(copied != bytes)) {
-//				nova_dbg("%s ERROR!: %p, bytes %lu, copied %lu\n",
-//					__func__, kmem, bytes, copied);
-//				if (status >= 0)
-//					status = -EFAULT;
-//			}
-//			if (status < 0)
-//				break;
-//
-//			if (begin_tail == 0)
-//				begin_tail = curr_entry;
-//			temp_tail = curr_entry + sizeof(struct nova_file_write_entry);
-//			
-//			
-//			kfree(pio_worker_thread);
-//			kfree(pio_worker_thread2);
-//		}
-//	}
-//
-//	nova_memunlock_inode(sb, pi);
-//	data_bits = blk_type_to_shift[pi->i_blk_type];
-//	le64_add_cpu(&pi->i_blocks,
-//			(total_blocks << (data_bits - sb->s_blocksize_bits)));
-//	nova_memlock_inode(sb, pi);
-//
-//	nova_update_tail(pi, temp_tail);
-//
-//	/* Free the overlap blocks after the write is committed */
-//	ret = nova_reassign_file_tree(sb, pi, sih, begin_tail);
-//	if (ret)
-//		goto out;
-//
-//	inode->i_blocks = le64_to_cpu(pi->i_blocks);
-//
-//	ret = written;
-//	write_breaks += step;
-//	nova_dbgv("blocks: %lu, %llu\n", inode->i_blocks, pi->i_blocks);
-//
-//	*ppos = pos;
-//	if (pos > inode->i_size) {
-//		i_size_write(inode, pos);
-//		sih->i_size = pos;
-//	}
-//
-//out:
-//	if (need_mutex)
-//		mutex_unlock(&inode->i_mutex);
-//	sb_end_write(inode->i_sb);
-//	NOVA_END_TIMING(cow_write_t, cow_write_time);
-//	cow_write_bytes += written;
-//	return ret;
-//}
-
-ssize_t nova_cow_file_write_original(struct file *filp,
+ssize_t nova_cow_file_write(struct file *filp,
 	const char __user *buf,	size_t len, loff_t *ppos, bool need_mutex)
 {
 	struct address_space *mapping = filp->f_mapping;
@@ -802,13 +385,9 @@ ssize_t nova_cow_file_write_original(struct file *filp,
 		start_blk = pos >> sb->s_blocksize_bits;
 
 		/* don't zero-out the allocated blocks */
-#if 1
 		allocated = nova_new_data_blocks(sb, pi, &blocknr, num_blocks,
 						start_blk, 0, 1);
-#else
-		allocated = nova_new_data_node_blocks(sb, pi, &blocknr, num_blocks,
-						start_blk, 0, 1, inode->i_ino % 2);
-#endif
+
 		nova_dbg_verbose("%s: alloc %d blocks @ %lu\n", __func__,
 						allocated, blocknr);
 
@@ -833,48 +412,27 @@ ssize_t nova_cow_file_write_original(struct file *filp,
 
 		/* Now copy from user buf */
 		NOVA_START_TIMING(memcpy_w_nvmm_t, memcpy_time);
-#if 1
+#if 0
 		if(((NOVA_SB(sb)->phys_addr >> PAGE_SHIFT) + blocknr) >= 0x2000000ULL) 
 			sched_setaffinity(pid_nr(get_task_pid(current, PIDTYPE_PID)), cpumask_of_node(1));
-			//sched_setaffinity(pid_nr(get_task_pid(current, PIDTYPE_PID)), affinity_mask[1]);
 		else 
 			sched_setaffinity(pid_nr(get_task_pid(current, PIDTYPE_PID)), cpumask_of_node(0));
-			//sched_setaffinity(pid_nr(get_task_pid(current, PIDTYPE_PID)), affinity_mask[0]);
-//
-//		if(((NOVA_SB(sb)->phys_addr >> PAGE_SHIFT) + blocknr) >= 0x2000000ULL) 
-//			printk("%s affinity log node 1: kmem %lx, blocknr %lu [%lx]\n", __func__, kmem, blocknr,
-//				((NOVA_SB(sb)->phys_addr >> PAGE_SHIFT) + blocknr));
-//		else
-//			printk("%s affinity log node 0: kmem %lx, blocknr %lu [%lx]\n", __func__, kmem, blocknr,
-//				((NOVA_SB(sb)->phys_addr >> PAGE_SHIFT) + blocknr));
-		
+	
 		copied = bytes - memcpy_to_pmem_nocache(kmem + offset,
 						buf, bytes);
 #else
 		pio_worker_thread = kmalloc(sizeof(*pio_worker_thread), GFP_KERNEL);
-		INIT_WORK(&(pio_worker_thread->real_work), worker_memcpy_to_pmem_nocache);
-		//INIT_DELAYED_WORK(&(pio_worker_thread->real_work), worker_memcpy_to_pmem_nocache);
+		INIT_WORK(&(pio_worker_thread->real_work), kworker_memcpy_to_pmem_nocache);
 	
 		pio_worker_thread->arg.dst = kmem + offset;
 		pio_worker_thread->arg.src = buf;
 		pio_worker_thread->arg.size = bytes;
 
-		if(((NOVA_SB(sb)->phys_addr >> PAGE_SHIFT) + blocknr) >= 0x2000000ULL) { 
-//			if(inode->i_ino % 2)
-//				queue_delayed_work_on(get_node1_cpuid(), node1_queue, &(pio_worker_thread->real_work), msecs_to_jiffies(100));
-				queue_work_on(get_node1_cpuid(), node1_queue, &(pio_worker_thread->real_work));
-//			else
-//				queue_work_on(get_node1_cpuid(), node0_queue, &(pio_worker_thread->real_work));
-		} else {
-//			if(inode->i_ino % 2)
-//				queue_work_on(get_node0_cpuid(), node1_queue, &(pio_worker_thread->real_work));
-//			else
-				queue_work_on(get_node0_cpuid(), node0_queue, &(pio_worker_thread->real_work));
-//				queue_delayed_work_on(get_node0_cpuid(), node0_queue, &(pio_worker_thread->real_work), msecs_to_jiffies(100));
-		}
+		if(((NOVA_SB(sb)->phys_addr >> PAGE_SHIFT) + blocknr) >= 0x2000000ULL) 
+			queue_work_on(get_node1_cpuid_rr(), node1_queue, &(pio_worker_thread->real_work));
+		else
+			queue_work_on(get_node0_cpuid_rr(), node0_queue, &(pio_worker_thread->real_work));
 
-		//queue_delayed_work_on
-		//flush_delayed_work(&(pio_worker_thread->real_work));
 		flush_work(&(pio_worker_thread->real_work));
 
 		copied = bytes - 0;
@@ -965,11 +523,7 @@ out:
 ssize_t nova_dax_file_write(struct file *filp, const char __user *buf,
 	size_t len, loff_t *ppos)
 {
-#if 1
-	return nova_cow_file_write_original(filp, buf, len, ppos, true);
-#else
 	return nova_cow_file_write(filp, buf, len, ppos, true);
-#endif
 }
 
 /*

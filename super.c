@@ -53,50 +53,21 @@ static struct kmem_cache *nova_range_node_cachep;
 /* FIXME: should the following variable be one per NOVA instance? */
 unsigned int nova_dbgmask = 0;
 
-//hustard
-struct pio_work_cont pio_worker[24];
-
-void worker_memcpy_to_pmem_nocache(struct work_struct *work) 
-//void worker_memcpy_to_pmem_nocache(struct delayed_work *work) 
+void kworker_memcpy_to_pmem_nocache(struct work_struct *work) 
 {
-//	int ret;
+	int ret;
 
 	struct pio_work_cont *w_ptr = container_of(work, struct pio_work_cont, real_work);
-//	if(w_ptr->arg.node == 0)
-//		sched_setaffinity(pid_vnr(get_task_pid(current, PIDTYPE_PID)), cpumask_of_node(0));
-//	else if(w_ptr->arg.node == 1)
-//		sched_setaffinity(pid_vnr(get_task_pid(current, PIDTYPE_PID)), cpumask_of_node(1));
-//	printk("inode number %ld, node %ld, dst %lx, src %lx, size %ld\n", w_ptr->arg.inode, w_ptr->arg.node, w_ptr->arg.dst, w_ptr->arg.src, w_ptr->arg.size);
 
-	__copy_from_user_inatomic_nocache(w_ptr->arg.dst, w_ptr->arg.src, w_ptr->arg.size);
-
-//	printk("dst: %lx, src: %lx, size: %u, node: %u, commit?: %d\n",
-//			w_ptr->arg.dst, w_ptr->arg.src, w_ptr->arg.size, w_ptr->arg.node, w_ptr->arg.commit);	
+	ret = __copy_from_user_inatomic_nocache(w_ptr->arg.dst, w_ptr->arg.src, w_ptr->arg.size);
 
 	return ;
 }
 
-void nova_affinity_mask_init()
+void nova_workqueue_init()
 {
-	int i;
-	alloc_cpumask_var(&affinity_mask[0], GFP_KERNEL);
-	alloc_cpumask_var(&affinity_mask[1], GFP_KERNEL);
-
-	for(i = 0;i < 6; i++)
-		cpumask_set_cpu(i, affinity_mask[0]);
-	for(i = 6;i < 12; i++)
-		cpumask_set_cpu(i, affinity_mask[1]);
-	for(i = 12;i < 18; i++)
-		cpumask_set_cpu(i, affinity_mask[0]);
-	for(i = 18;i < 24; i++)
-		cpumask_set_cpu(i, affinity_mask[1]);
-
-	//pio_worker = kmalloc(sizeof(*pio_worker)*24, GFP_KERNEL);
-	//INIT_WORK(&(pio_worker[0].real_work), worker_memcpy_to_pmem_nocache);
 	node0_queue = create_workqueue("pio_node0");	
 	node1_queue = create_workqueue("pio_node1");	
-
-//	free_cpumask_var(new_mask);
 }
 
 
@@ -429,7 +400,7 @@ static struct nova_inode *nova_init(struct super_block *sb,
 					NOVA_ROOT_INO);
 
 	//hustard
-	nova_affinity_mask_init();
+	nova_workqueue_init();
 
 	PERSISTENT_MARK();
 	PERSISTENT_BARRIER();

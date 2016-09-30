@@ -140,9 +140,6 @@ extern unsigned int nova_dbgmask;
 
 extern int measure_timing;
 //hustard
-extern cpumask_var_t affinity_mask[2];
-extern int node_cpu_number;
-extern struct pio_work_cont pio_worker[24];
 extern struct workqueue_struct *node0_queue;
 extern struct workqueue_struct *node1_queue;
 
@@ -898,10 +895,6 @@ extern int nova_free_log_blocks(struct super_block *sb, struct nova_inode *pi,
 extern int nova_new_data_blocks(struct super_block *sb, struct nova_inode *pi,
 	unsigned long *blocknr, unsigned int num, unsigned long start_blk,
 	int zero, int cow);
-//hustard
-extern int nova_new_data_node_blocks(struct super_block *sb, struct nova_inode *pi,
-	unsigned long *blocknr, unsigned int num, unsigned long start_blk,
-	int zero, int cow, int node);
 extern int nova_new_log_blocks(struct super_block *sb, struct nova_inode *pi,
 	unsigned long *blocknr, unsigned int num, int zero);
 extern unsigned long nova_count_free_blocks(struct super_block *sb);
@@ -942,8 +935,8 @@ ssize_t nova_dax_file_write(struct file *filp, const char __user *buf,
 int nova_dax_get_block(struct inode *inode, sector_t iblock,
 	struct buffer_head *bh, int create);
 int nova_dax_file_mmap(struct file *file, struct vm_area_struct *vma);
-int get_node0_cpuid(void);
-int get_node1_cpuid(void);
+int get_node0_cpuid_rr(void);
+int get_node1_cpuid_rr(void);
 
 /* dir.c */
 extern const struct file_operations nova_dir_operations;
@@ -1045,9 +1038,8 @@ int nova_check_integrity(struct super_block *sb,
 	struct nova_super_block *super);
 void *nova_ioremap(struct super_block *sb, phys_addr_t phys_addr,
 	ssize_t size);
-extern void nova_affinity_mask_init(void); 
-extern void worker_memcpy_to_pmem_nocache(struct work_struct *work); 
-//extern void worker_memcpy_to_pmem_nocache(struct delayed_work *work); 
+extern void nova_workqueue_init(void); 
+extern void kworker_memcpy_to_pmem_nocache(struct work_struct *work); 
 
 /* symlink.c */
 extern const struct inode_operations nova_symlink_inode_operations;
